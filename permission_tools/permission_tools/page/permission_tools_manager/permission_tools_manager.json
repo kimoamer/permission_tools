@@ -1,0 +1,19 @@
+{
+ "content": null,
+ "creation": "2026-01-01 00:00:00.000000",
+ "docstatus": 0,
+ "doctype": "Page",
+ "idx": 0,
+ "modified": "2026-01-01 00:00:00.000000",
+ "module": "Permission Tools",
+ "name": "permission-tools-manager",
+ "page_name": "permission-tools-manager",
+ "roles": [
+  {
+   "role": "System Manager"
+  }
+ ],
+ "standard": "Yes",
+ "system_page": 0,
+ "title": "Permission Tools Manager"
+}

@@ -1,0 +1,14 @@
+[project]
+name = "permission_tools"
+version = "1.0.0"
+description = "Safely import and export role permissions via UI or bench (additive, no resets)."
+requires-python = ">=3.10"
+readme = "README.md"
+dependencies = []
+
+[build-system]
+requires = ["flit_core >=3.4,<4"]
+build-backend = "flit_core.buildapi"
+
+[tool.flit.module]
+name = "permission_tools"
