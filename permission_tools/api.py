@@ -16,6 +16,7 @@ Safe, additive import & export of role permissions for Frappe / ERPNext.
 All functions are restricted to System Manager.
 """
 
+import base64
 import csv
 import io
 import os
@@ -62,6 +63,59 @@ def _estimate_total_rows(csv_content):
     return max(line_count - 1, 0)
 
 
+def _normalize_csv_text(csv_content):
+    csv_content = csv_content or ""
+    csv_content = csv_content.lstrip("\ufeff")
+    if "\x00" not in csv_content:
+        return csv_content
+
+    try:
+        return _decode_csv_bytes(csv_content.encode("latin-1"))
+    except UnicodeEncodeError:
+        return csv_content.replace("\x00", "")
+
+
+def _decode_csv_bytes(content):
+    if not content:
+        return ""
+
+    null_ratio = content.count(b"\x00") / max(len(content), 1)
+    encodings = ["utf-8-sig"]
+    if content.startswith((b"\xff\xfe", b"\xfe\xff")):
+        encodings.insert(0, "utf-16")
+    if null_ratio > 0.05:
+        even_nulls = content[0::2].count(b"\x00")
+        odd_nulls = content[1::2].count(b"\x00")
+        if odd_nulls >= even_nulls:
+            encodings.extend(["utf-16-le", "utf-16-be", "utf-16"])
+        else:
+            encodings.extend(["utf-16-be", "utf-16-le", "utf-16"])
+    encodings.extend(["cp1256", "latin-1"])
+
+    tried = set()
+    for encoding in encodings:
+        if encoding in tried:
+            continue
+        tried.add(encoding)
+        try:
+            decoded = content.decode(encoding)
+        except UnicodeError:
+            continue
+        decoded = decoded.lstrip("\ufeff")
+        if "\x00" not in decoded:
+            return decoded
+
+    return content.decode("utf-8", errors="replace").replace("\x00", "").lstrip("\ufeff")
+
+
+def _decode_csv_base64(csv_content_base64):
+    try:
+        content = base64.b64decode(csv_content_base64 or "", validate=True)
+    except Exception:
+        frappe.throw(_("Could not decode the uploaded CSV file."))
+    return content, _decode_csv_bytes(content)
+
+
 def _append_log(log, message):
     log.append(message)
     if len(log) > MAX_LOG_LINES:
@@ -101,8 +155,12 @@ def _write_import_file(job_id, csv_content):
     folder = _get_import_upload_dir()
     os.makedirs(folder, exist_ok=True)
     file_path = os.path.join(folder, f"{job_id}.csv")
-    with open(file_path, "w", encoding="utf-8") as f:
-        f.write(csv_content or "")
+    if isinstance(csv_content, bytes):
+        with open(file_path, "wb") as f:
+            f.write(csv_content)
+    else:
+        with open(file_path, "w", encoding="utf-8") as f:
+            f.write(_normalize_csv_text(csv_content))
     return file_path
 
 
@@ -151,7 +209,7 @@ def _import_permissions(csv_content, create_missing_roles=1, dry_run=0, progress
     """Shared import implementation used by direct calls and background jobs."""
     create_missing_roles = _to_bool(create_missing_roles)
     dry_run = _to_bool(dry_run)
-    csv_content = (csv_content or "").lstrip("\ufeff")
+    csv_content = _normalize_csv_text(csv_content)
 
     reader = csv.DictReader(io.StringIO(csv_content))
     log, applied, skipped, processed = [], 0, 0, 0
@@ -243,17 +301,23 @@ def _import_permissions(csv_content, create_missing_roles=1, dry_run=0, progress
 
 
 @frappe.whitelist()
-def enqueue_import_permissions(csv_content, create_missing_roles=1, dry_run=0):
+def enqueue_import_permissions(csv_content=None, csv_content_base64=None, create_missing_roles=1, dry_run=0):
     """
     Queue a CSV import in the long worker and return a job id for polling.
     """
     _guard()
+    raw_content = None
+    if csv_content_base64:
+        raw_content, csv_content = _decode_csv_base64(csv_content_base64)
+    else:
+        csv_content = _normalize_csv_text(csv_content)
+
     if not (csv_content or "").strip():
         return {"status": "finished", "applied": 0, "skipped": 0, "dry_run": _to_bool(dry_run),
                 "log": ["No data rows found in CSV."]}
 
     job_id = f"permission_tools_import_{uuid4().hex}"
-    csv_path = _write_import_file(job_id, csv_content)
+    csv_path = _write_import_file(job_id, raw_content if raw_content is not None else csv_content)
     _set_import_job_state(
         job_id,
         status="queued",
@@ -308,8 +372,8 @@ def run_import_permissions_job(import_job_id, csv_path, create_missing_roles=1, 
         )
 
     try:
-        with open(csv_path, encoding="utf-8-sig") as f:
-            csv_content = f.read()
+        with open(csv_path, "rb") as f:
+            csv_content = _decode_csv_bytes(f.read())
         result = _import_permissions(csv_content, create_missing_roles, dry_run, update_progress)
         _set_import_job_state(
             import_job_id,
@@ -361,8 +425,8 @@ def run_from_file(csv_path, create_missing_roles=1, dry_run=0):
         bench --site SITE execute permission_tools.api.run_from_file \\
             --kwargs "{'csv_path': '/path/to/file.csv'}"
     """
-    with open(csv_path, newline="", encoding="utf-8-sig") as f:
-        content = f.read()
+    with open(csv_path, "rb") as f:
+        content = _decode_csv_bytes(f.read())
     result = import_permissions(content, create_missing_roles, dry_run)
     print("\n".join(result["log"]))
     return result

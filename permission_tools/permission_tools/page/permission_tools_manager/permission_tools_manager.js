@@ -60,6 +60,17 @@ frappe.pages['permission-tools-manager'].on_page_load = function (wrapper) {
 		}
 	};
 
+	const arrayBufferToBase64 = (buffer) => {
+		const bytes = new Uint8Array(buffer);
+		const chunkSize = 0x8000;
+		let binary = '';
+		for (let i = 0; i < bytes.length; i += chunkSize) {
+			const chunk = bytes.subarray(i, i + chunkSize);
+			binary += String.fromCharCode.apply(null, chunk);
+		}
+		return btoa(binary);
+	};
+
 	const renderImportStatus = (job) => {
 		const lines = [];
 		const status = job.status || job.rq_status || 'unknown';
@@ -145,7 +156,7 @@ frappe.pages['permission-tools-manager'].on_page_load = function (wrapper) {
 			frappe.call({
 				method: 'permission_tools.api.enqueue_import_permissions',
 				args: {
-					csv_content: e.target.result,
+					csv_content_base64: arrayBufferToBase64(e.target.result),
 					create_missing_roles: $body.find('#pt-create-roles').is(':checked') ? 1 : 0,
 					dry_run: $body.find('#pt-dry-run').is(':checked') ? 1 : 0,
 				},
@@ -171,7 +182,7 @@ frappe.pages['permission-tools-manager'].on_page_load = function (wrapper) {
 			setImportBusy(false);
 			setLog(__('Could not read the selected CSV file.'));
 		};
-		reader.readAsText(file);
+		reader.readAsArrayBuffer(file);
 	});
 
 	// ---- Export ----
