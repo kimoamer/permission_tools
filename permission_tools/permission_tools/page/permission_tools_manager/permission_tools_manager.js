@@ -45,6 +45,81 @@ frappe.pages['permission-tools-manager'].on_page_load = function (wrapper) {
 
 	const logEl = $body.find('#pt-log');
 	const setLog = (lines) => logEl.text(Array.isArray(lines) ? lines.join('\n') : lines);
+	let importPollTimer = null;
+
+	const setImportBusy = (busy) => {
+		$body.find('#pt-import-btn')
+			.prop('disabled', busy)
+			.text(busy ? __('Import Running...') : __('Run Import'));
+	};
+
+	const stopImportPolling = () => {
+		if (importPollTimer) {
+			clearTimeout(importPollTimer);
+			importPollTimer = null;
+		}
+	};
+
+	const renderImportStatus = (job) => {
+		const lines = [];
+		const status = job.status || job.rq_status || 'unknown';
+		lines.push(__('Status: {0}', [status]));
+		if (job.total) {
+			lines.push(__('Processed {0} of {1} rows. Applied {2}, skipped {3}.', [
+				job.processed || 0, job.total, job.applied || 0, job.skipped || 0,
+			]));
+		} else if (job.processed) {
+			lines.push(__('Processed {0} rows. Applied {1}, skipped {2}.', [
+				job.processed, job.applied || 0, job.skipped || 0,
+			]));
+		}
+		if (job.job_id) {
+			lines.push(__('Job ID: {0}', [job.job_id]));
+		}
+		if (job.error) {
+			lines.push('');
+			lines.push(job.error);
+		}
+		if (job.log && job.log.length) {
+			lines.push('');
+			lines.push(...job.log);
+		}
+		setLog(lines);
+	};
+
+	const pollImportJob = (jobId) => {
+		frappe.call({
+			method: 'permission_tools.api.get_import_job_status',
+			args: { job_id: jobId },
+			callback: (r) => {
+				const job = r.message || {};
+				renderImportStatus(job);
+
+				if (['finished', 'failed', 'missing'].includes(job.status)) {
+					stopImportPolling();
+					setImportBusy(false);
+					if (job.status === 'finished') {
+						frappe.show_alert({
+							message: __('Import finished. Applied {0}, skipped {1}', [
+								job.applied || 0, job.skipped || 0,
+							]),
+							indicator: job.skipped ? 'orange' : 'green',
+						});
+					} else {
+						frappe.show_alert({ message: __('Import did not finish.'), indicator: 'red' });
+					}
+					return;
+				}
+
+				importPollTimer = setTimeout(() => pollImportJob(jobId), 2000);
+			},
+			error: () => {
+				stopImportPolling();
+				setImportBusy(false);
+				setLog(__('Could not read import job status.'));
+			},
+		});
+	};
 
 	// ---- Export filter controls (multiselect role + link doctype) ----
 	const roleControl = frappe.ui.form.make_control({
@@ -62,28 +137,39 @@ frappe.pages['permission-tools-manager'].on_page_load = function (wrapper) {
 	$body.find('#pt-import-btn').on('click', () => {
 		const file = $body.find('#pt-file')[0].files[0];
 		if (!file) { frappe.msgprint(__('Please choose a CSV file first.')); return; }
+		stopImportPolling();
+		setImportBusy(true);
+		setLog(__('Reading CSV...'));
 		const reader = new FileReader();
 		reader.onload = (e) => {
 			frappe.call({
-				method: 'permission_tools.api.import_permissions',
+				method: 'permission_tools.api.enqueue_import_permissions',
 				args: {
 					csv_content: e.target.result,
 					create_missing_roles: $body.find('#pt-create-roles').is(':checked') ? 1 : 0,
 					dry_run: $body.find('#pt-dry-run').is(':checked') ? 1 : 0,
 				},
-				freeze: true, freeze_message: __('Applying permissions...'),
+				freeze: true, freeze_message: __('Queueing import...'),
 				callback: (r) => {
 					if (r.message) {
-						setLog(r.message.log);
-						frappe.show_alert({
-							message: __('Applied {0}, skipped {1}{2}', [
-								r.message.applied, r.message.skipped,
-								r.message.dry_run ? ' (dry run)' : '']),
-							indicator: r.message.skipped ? 'orange' : 'green',
-						});
+						if (r.message.status === 'finished') {
+							setImportBusy(false);
+							setLog(r.message.log);
+							return;
+						}
+						setLog([__('Import queued.'), __('Job ID: {0}', [r.message.job_id])]);
+						pollImportJob(r.message.job_id);
 					}
 				},
+				error: () => {
+					setImportBusy(false);
+					setLog(__('Could not queue import job.'));
+				},
 			});
+		};
+		reader.onerror = () => {
+			setImportBusy(false);
+			setLog(__('Could not read the selected CSV file.'));
 		};
 		reader.readAsText(file);
 	});
