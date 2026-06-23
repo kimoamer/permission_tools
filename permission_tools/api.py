@@ -57,10 +57,7 @@ def _estimate_total_rows(csv_content):
     if not csv_content:
         return 0
 
-    line_count = csv_content.count("\n")
-    if not csv_content.endswith(("\n", "\r")):
-        line_count += 1
-    return max(line_count - 1, 0)
+    return max(len(csv_content.splitlines()) - 1, 0)
 
 
 def _normalize_csv_text(csv_content):
@@ -211,7 +208,7 @@ def _import_permissions(csv_content, create_missing_roles=1, dry_run=0, progress
     dry_run = _to_bool(dry_run)
     csv_content = _normalize_csv_text(csv_content)
 
-    reader = csv.DictReader(io.StringIO(csv_content))
+    reader = csv.DictReader(io.StringIO(csv_content, newline=""))
     log, applied, skipped, processed = [], 0, 0, 0
 
     if not reader.fieldnames:
